@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "offline-translate"
+dynamic = ["version"]
+description = "Offline machine translation using Google Translate's on-device language packs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "asimon655" }]
+keywords = ["translation", "offline", "nmt", "tflite", "google-translate"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Text Processing :: Linguistic",
+    "Typing :: Typed",
+]
+dependencies = [
+    "ai-edge-litert>=1.0",
+    "numpy>=1.24",
+    "sentencepiece>=0.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/asimon655/offline-translate"
+Issues = "https://github.com/asimon655/offline-translate/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.hatch.version]
+path = "src/offline_translate/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/offline_translate"]
+
+# Explicit allow-list: models/, phone_dump/ etc. must never end up in an upload.
+[tool.hatch.build.targets.sdist]
+only-include = ["src", "tests", "conftest.py", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "network: talks to dl.google.com (enable with --network)",
+    "models: needs real installed models (enable with --models=DIR)",
+]
