@@ -4,7 +4,9 @@ import shutil
 import pytest
 
 from fakes import FakeGoogle
-from offline_translate import Language, TranslateError, Translation, Translator
+import threading
+
+from offline_translate import DownloadCancelled, Language, NotInstalledError, TranslateError, Translation, Translator
 
 
 def langs_by_code(t):
@@ -145,6 +147,33 @@ class TestDownload:
         step = google.file_content("en_iw", "decoder_step_0.tflite", "v1")
         assert (tmp_path / "en_iw" / "decoder_step_0.tflite").read_bytes() == step
 
+    def test_cancel_keeps_finished_files_and_resumes(self, tmp_path, google):
+        t = Translator(tmp_path)
+        cancel = threading.Event()
+        calls = []
+
+        def progress(done, total):
+            calls.append(done)
+            if len(calls) == 3:
+                cancel.set()
+
+        with pytest.raises(DownloadCancelled):
+            t.download("iw", progress=progress, cancel=cancel)
+        assert not langs_by_code(t)["iw"].installed
+        assert not list(tmp_path.glob("*.partial/*.part"))
+        n = len(google.file_requests())
+        t.download("iw")
+        assert langs_by_code(t)["iw"].installed
+        assert len(google.file_requests()) - n < 2 * len(google.blobs)  # resumed, not restarted
+        assert not list(tmp_path.glob("*.partial"))
+
+    def test_cancel_before_start(self, tmp_path, google):
+        cancel = threading.Event()
+        cancel.set()
+        with pytest.raises(DownloadCancelled):
+            Translator(tmp_path).download("iw", cancel=cancel)
+        assert not google.file_requests()
+
     @pytest.mark.parametrize("lang, match", [("en", "built in"), ("xx", "unknown"), ("bs", "older model format")])
     def test_rejects(self, tmp_path, google, lang, match):
         with pytest.raises(TranslateError, match=match):
@@ -232,8 +261,20 @@ class TestTranslate:
             installed.translate("hello", target="ar", source="en")
 
     def test_missing_both(self, installed):
-        with pytest.raises(TranslateError, match="download: ar, de"):
+        with pytest.raises(NotInstalledError, match="download: ar, de") as e:
             installed.translate("x", target="de", source="ar")
+        assert e.value.missing == ["ar", "de"]
+
+    def test_preload_loaded_unload(self, installed, fake_engine):
+        assert installed.loaded() == []
+        assert installed.preload("he", "fr") == [("iw", "en"), ("en", "fr")]
+        assert installed.loaded() == [("en", "fr"), ("iw", "en")]
+        installed.unload([("iw", "en")])
+        assert installed.loaded() == [("en", "fr")]
+        installed.unload()
+        assert installed.loaded() == []
+        installed.translate("a", target="fr", source="en")
+        assert fake_engine.loaded == ["iw_en", "en_fr", "en_fr"]
 
     def test_models_are_cached(self, installed, fake_engine):
         installed.translate("a", target="iw", source="en")

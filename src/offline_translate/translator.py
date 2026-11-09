@@ -16,6 +16,18 @@ class TranslateError(Exception):
     pass
 
 
+class NotInstalledError(TranslateError):
+    """A translation needs language packs that aren't installed; .missing lists them."""
+
+    def __init__(self, message, missing):
+        super().__init__(message)
+        self.missing = missing
+
+
+class DownloadCancelled(TranslateError):
+    """download() was stopped by its cancel event. Finished files are kept, so a retry resumes."""
+
+
 @dataclass(frozen=True)
 class Language:
     code: str
@@ -134,10 +146,11 @@ class Translator:
             raise TranslateError(f"unknown language '{lang}'")
         return code
 
-    def download(self, lang, progress=None, force=False):
+    def download(self, lang, progress=None, force=False, cancel=None):
         """
         Download (or update) a language pack. Already up-to-date directions are skipped unless force.
         progress(done_bytes, total_bytes) is called while downloading (sizes are compressed bytes).
+        cancel: a threading.Event (or anything with is_set()); setting it raises DownloadCancelled.
         """
         pack = self._catalog()[self._resolve(lang)]
         if not pack.supported:
@@ -150,11 +163,14 @@ class Translator:
             tmp.mkdir(exist_ok=True)
             meta = {}
             for f in pkg.files:
+                if cancel is not None and cancel.is_set():
+                    raise DownloadCancelled("download cancelled")
                 dest = tmp / f.name
                 if dest.exists() and hashlib.sha1(dest.read_bytes()).hexdigest() == f.sha1:  # resume
                     meta[f.name] = f.sha1
                 else:
-                    meta[f.name] = self._download_file(f, dest, lambda n: progress and progress(done + n, total))
+                    meta[f.name] = self._download_file(f, dest, lambda n: progress and progress(done + n, total),
+                                                       cancel)
                 done += f.download_size
                 if progress:
                     progress(done, total)
@@ -166,11 +182,15 @@ class Translator:
             self._models.pop(tuple(pkg.name.split("_", 1)), None)
 
     @staticmethod
-    def _download_file(f, dest, on_bytes):
+    def _download_file(f, dest, on_bytes, cancel=None):
         sha, dec, got = hashlib.sha1(), zlib.decompressobj(), 0
         part = dest.with_suffix(dest.suffix + ".part")
         with cat.open_url(f.url) as r, open(part, "wb") as out:
             while chunk := r.read(1 << 16):
+                if cancel is not None and cancel.is_set():
+                    out.close()
+                    part.unlink()
+                    raise DownloadCancelled("download cancelled")
                 got += len(chunk)
                 on_bytes(got)
                 data = dec.decompress(chunk)
@@ -225,16 +245,36 @@ class Translator:
         if (source, "en") in pairs and ("en", target) in pairs:
             return [(source, "en"), ("en", target)]
         missing = [l for l in (source, target) if l != "en" and not {(l, "en"), ("en", l)} <= pairs]
-        raise TranslateError(f"no model for {source} -> {target}; download: {', '.join(missing)}")
+        raise NotInstalledError(f"no model for {source} -> {target}; download: {', '.join(missing)}", missing)
+
+    def _model(self, pair):
+        model = self._models.get(pair)
+        if model is None:
+            from .engine import NmtModel  # deferred: TFLite import is the slow part
+            model = self._models[pair] = NmtModel(self._pair_dir("_".join(pair)))
+        return model
+
+    def preload(self, source, target):
+        """Load the models for source->target now, so the first translate() is fast. Returns the hops."""
+        hops = self.route(normalize(source), normalize(target))
+        for pair in hops:
+            self._model(pair)
+        return hops
+
+    def loaded(self):
+        """Model directions currently held in memory, e.g. [("en", "iw")]."""
+        return sorted(self._models)
+
+    def unload(self, pairs=None):
+        """Free the memory of loaded models (all of them, or just the given directions)."""
+        for pair in list(self._models) if pairs is None else pairs:
+            self._models.pop(tuple(pair), None)
 
     def translate(self, text, target, source=None):
         source = normalize(source) if source else self.detect(text)
         target = normalize(target)
         hops = self.route(source, target)
         for pair in hops:
-            if pair not in self._models:
-                from .engine import NmtModel  # deferred: TFLite import is the slow part
-                self._models[pair] = NmtModel(self._pair_dir("_".join(pair)))
-            text = self._models[pair].translate(text, beam=self.beam)
+            text = self._model(pair).translate(text, beam=self.beam)
         via = (source,) + tuple(t for _, t in hops) if hops else (source,)
         return Translation(text, source, target, via)

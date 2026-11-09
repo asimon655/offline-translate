@@ -59,12 +59,38 @@ directions to and from English.
 | `detect(text) -> str` | Guess among installed languages |
 | `languages(installed_only=False) -> list[Language]` | `Language(code, name, installed, download_size, size, update_available, builtin, supported)` |
 | `installed_languages() -> list[str]` | |
-| `download(lang, progress=None, force=False)` | Verifies SHA-1 of every file; resumes interrupted downloads |
+| `download(lang, progress=None, force=False, cancel=None)` | Verifies SHA-1 of every file; resumes interrupted downloads. Set the `cancel` `threading.Event` to stop (`DownloadCancelled`) |
 | `remove(lang)` | |
 | `update_catalog() -> str` | Returns the catalog version |
-| `TranslateError` | Raised for unknown/uninstalled languages, checksum failures, … |
+| `preload(source, target)`, `loaded()`, `unload(pairs=None)` | Load models ahead of time / free their memory (~110 MB per direction) |
+| `TranslateError` | Raised for unknown languages, checksum failures, …; `NotInstalledError` (`.missing`) and `DownloadCancelled` are subclasses |
 
 Network errors surface as `OSError`.
+
+## Helper process
+
+Apps that aren't written in Python can run the library as a long-lived helper and keep models warm
+(~30 ms per sentence once loaded). It speaks one JSON object per line on stdin/stdout:
+
+```bash
+offline-translate-helper --models ~/models [--idle-unload 600]
+```
+
+```json
+→ {"id": 7, "method": "translate", "params": {"text": "Hello", "target": "iw"}}
+← {"id": 7, "result": {"text": "שלום", "source": "en", "target": "iw", "via": ["en", "iw"], "ms": 31}}
+→ {"id": 8, "method": "download", "params": {"lang": "fr"}}
+← {"event": "progress", "id": 8, "lang": "fr", "done": 18400000, "total": 54700000}
+← {"id": 8, "result": {"installed": true, "lang": "fr"}}
+← {"id": 9, "error": {"code": "not_installed", "message": "...", "missing": ["de"]}}
+```
+
+Methods: `ping`, `translate`, `detect`, `languages`, `installed`, `catalog_version`, `update_catalog`,
+`download`, `cancel`, `remove`, `preload`, `unload`, `loaded`, `shutdown`. Lines without an `id` are
+events (`ready`, `progress`, `unloaded`). Error codes: `not_installed`, `cancelled`, `busy`,
+`translate_error`, `network`, `io_error`, `bad_request`, `unknown_method`, `internal`. Responses can
+arrive out of order: translations and downloads run on separate threads. The helper exits on
+`shutdown` or when stdin closes. See `src/offline_translate/helper.py`.
 
 ## Command line
 

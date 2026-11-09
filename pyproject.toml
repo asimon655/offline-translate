@@ -29,6 +29,9 @@ dependencies = [
     "sentencepiece>=0.2",
 ]
 
+[project.scripts]
+offline-translate-helper = "offline_translate.helper:main"
+
 [project.urls]
 Homepage = "https://github.com/asimon655/offline-translate"
 Issues = "https://github.com/asimon655/offline-translate/issues"
